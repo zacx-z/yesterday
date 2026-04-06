@@ -148,7 +148,7 @@ struct yst_context
     struct yst_comp_type_node *first;
     yst_entity_id next_entity;
     struct yst_frame_data *frame_data;
-    uint16_t frame_capacity;
+    uint64_t frame_capacity;
 
     yst_frame_t now;
     yst_frame_t latest;
@@ -197,6 +197,7 @@ YST_API void yst_init(struct yst_context *ctx, yst_alloc_f alloc, yst_dealloc_f 
     ctx->dealloc = dealloc;
     ctx->first = nullptr;
     ctx->now = 0;
+    ctx->latest = 0;
     ctx->frame_data = nullptr;
     ctx->forward_rec_pool = nullptr;
     ctx->forward_rec_next_recycled = nullptr;
@@ -443,7 +444,7 @@ YST_API void yst_relive(struct yst_context *ctx, yst_frame_t time)
 
 YST_API void yst_elapse(struct yst_context *ctx, float delta_time)
 {
-    if (ctx->latest >= ctx->now)
+    if (ctx->latest > ctx->now)
     {
         ++ctx->now; // keep this frame's data and remove the data after it
 
@@ -470,7 +471,7 @@ YST_API void yst_elapse(struct yst_context *ctx, float delta_time)
             archive = prev;
         }
 
-        for (uint32_t t = ctx->now; t <= ctx->latest; ++t)
+        for (uint32_t t = ctx->now; t < ctx->latest; ++t)
         {
             ctx->frame_data[t].archive = nullptr;
         }
@@ -515,10 +516,10 @@ YST_API void yst_elapse(struct yst_context *ctx, float delta_time)
         ctx->frame_capacity *= 2;
     }
 
-    ctx->latest = ctx->now;
     ctx->frame_data[ctx->now + 1].time = ctx->frame_data[ctx->now].time + delta_time;
     ctx->frame_data[ctx->now + 1].archive = nullptr;
     ++ctx->now;
+    ctx->latest = ctx->now;
 }
 
 YST_LIB void yst_fast_forward(struct yst_context *ctx, yst_frame_t time)
@@ -539,7 +540,7 @@ YST_LIB void yst_fast_forward(struct yst_context *ctx, yst_frame_t time)
         }
     }
 
-    if (time > ctx->latest) time = ctx->latest;
+    if (time > ctx->latest - 1) time = ctx->latest - 1;
     ctx->now = time;
 }
 
