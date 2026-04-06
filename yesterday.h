@@ -86,7 +86,7 @@ struct yst_comp_array
     uint32_t capacity;
 };
 
-struct yst_comp_type_node 
+struct yst_comp_type_node
 {
     struct yst_comp_type_node *next;
     struct yst_comp_node_header *recycled;
@@ -198,7 +198,6 @@ YST_API void yst_init(struct yst_context *ctx, yst_alloc_f alloc, yst_dealloc_f 
     ctx->first = nullptr;
     ctx->now = 0;
     ctx->latest = 0;
-    ctx->frame_data = nullptr;
     ctx->forward_rec_pool = nullptr;
     ctx->forward_rec_next_recycled = nullptr;
 
@@ -209,7 +208,7 @@ YST_API void yst_init(struct yst_context *ctx, yst_alloc_f alloc, yst_dealloc_f 
     ctx->frame_archive_region = nullptr;
 
     ctx->frame_capacity = YST_INIT_FRAME_CAPACITY;
-    ctx->frame_data = yst_realloc(ctx, ctx->frame_data, YST_INIT_FRAME_CAPACITY * sizeof(struct yst_frame_data), 0, YST_ALLOC_FRAME_DATA);
+    ctx->frame_data = ctx->alloc(YST_INIT_FRAME_CAPACITY * sizeof(struct yst_frame_data), YST_ALLOC_FRAME_DATA);
     yst_create_forward_rec_pool(ctx, YST_FORWARD_REC_POOL_CAPACITY, &ctx->forward_rec_pool);
 }
 
@@ -429,18 +428,27 @@ YST_API void yst_relive(struct yst_context *ctx, yst_frame_t time)
             {
                 // find the actual node in the archive
                 header = header->forward_in_time->next_in_time->prev_in_time;
+                assert(current != header);
+            }
+            else
+            {
+                // the head is the same as the latest in the archive
+                header = header->prev_in_time;
             }
 
             struct yst_comp_node_header* look_ahead = header->prev_in_time;
-            while (look_ahead != nullptr && look_ahead->timestamp > time)
+            while (look_ahead != nullptr && header->timestamp > time)
             {
                 look_ahead->forward_in_time = yst_new_forward_record(ctx, header);
 
+                assert(header != look_ahead);
                 header = look_ahead;
                 look_ahead = header->prev_in_time;
             }
 
-            if (current != header)
+            assert(header->timestamp <= time);
+
+            if (current != header && header->forward_in_time)
             {
                 memcpy(current, header, array->elem_size);
             }
@@ -468,6 +476,10 @@ YST_API void yst_elapse(struct yst_context *ctx, float delta_time)
                     // find the actual node in the archive
                     header = header->forward_in_time->next_in_time->prev_in_time;
                     current->forward_in_time = nullptr;
+                    current->prev_in_time = header;
+
+                    assert(current != header);
+                    assert(current->timestamp < ctx->now);
                 }
                 while (header->forward_in_time != nullptr)
                 {
@@ -521,6 +533,8 @@ YST_API void yst_elapse(struct yst_context *ctx, float delta_time)
                     memcpy(dst, header, elem_size);
                     header->prev_in_time = (struct yst_comp_node_header*)dst;
 
+                    assert(header != dst);
+
                     ++cur_archive_index;
                 }
             }
@@ -548,17 +562,25 @@ YST_LIB void yst_fast_forward(struct yst_context *ctx, yst_frame_t time)
         {
             struct yst_comp_node_header* current = yst_get_comp_at(array, i);
             struct yst_comp_node_header* header = current;
-            while (header->timestamp < time && header->forward_in_time != nullptr)
+
+            struct yst_comp_forward_record* look_ahead = header->forward_in_time;
+            while (look_ahead != nullptr && look_ahead->next_in_time->timestamp <= time)
             {
-                struct yst_comp_node_header* next = header->forward_in_time->next_in_time;
                 yst_delete_forward_record(ctx, header->forward_in_time);
                 header->forward_in_time = nullptr;
-                header = next;
+                header = look_ahead->next_in_time;
+                look_ahead = header->forward_in_time;
             }
+
+            assert(header->timestamp <= time);
 
             if (current != header)
             {
                 memcpy(current, header, array->elem_size);
+                if (!header->forward_in_time)
+                {
+                    current->prev_in_time = header;
+                }
             }
         }
     }
@@ -706,4 +728,4 @@ YST_LIB void yst_delete_forward_record(struct yst_context *ctx, struct yst_comp_
 #endif // YST_IMPLEMENTATION
 
 #undef nullptr
-#endif // YST_YESTERDAY_H 
+#endif // YST_YESTERDAY_H
