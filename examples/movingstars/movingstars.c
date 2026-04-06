@@ -18,6 +18,7 @@ struct app_state
     struct fenster *f;
     struct yst_context *ctx;
     bool is_playing;
+    int was_key_down[256];
 };
 
 void* alloc_func(size_t size, enum yst_alloc_type alloc_type)
@@ -56,6 +57,36 @@ void draw_timebar(struct app_state *app)
         }
         app->is_playing = false;
     }
+
+    if ((app->f->keys[','] && !app->was_key_down[',']) || app->f->keys['-'])
+    {
+        if (app->ctx->now > 0)
+        {
+            yst_relive(app->ctx, app->ctx->now - 1);
+        }
+        app->is_playing = false;
+    }
+
+    if ((app->f->keys['.'] && !app->was_key_down['.']) || app->f->keys['='])
+    {
+        if (app->ctx->now < app->ctx->latest)
+        {
+            yst_relive(app->ctx, app->ctx->now + 1);
+        }
+        app->is_playing = false;
+    }
+
+    if (app->f->keys['['] && !app->was_key_down['['])
+    {
+        yst_relive(app->ctx, 0);
+        app->is_playing = false;
+    }
+
+    if (app->f->keys[']'] && !app->was_key_down[']'])
+    {
+        yst_relive(app->ctx, app->ctx->latest);
+        app->is_playing = false;
+    }
 }
 
 int main() {
@@ -86,7 +117,6 @@ int main() {
         entities[i] = entity;
     }
 
-    bool was_spacebar_pressed = false;
     int64_t cur_time = fenster_time();
 
     while (fenster_loop(&f) == 0)
@@ -94,12 +124,10 @@ int main() {
         if (f.keys[27])
             break;
 
-        if (f.keys[32] && !was_spacebar_pressed)
+        if (f.keys[32] && !app.was_key_down[32])
         {
             app.is_playing = !app.is_playing;
-            was_spacebar_pressed = true;
         }
-        was_spacebar_pressed = f.keys[32];
 
         int64_t next_time = fenster_time();
 #ifdef FPS
@@ -170,6 +198,8 @@ int main() {
                 fflush(stdout);
             }
         }
+
+        memcpy(app.was_key_down, f.keys, sizeof(f.keys));
     }
 
     yst_finalize(&ctx);

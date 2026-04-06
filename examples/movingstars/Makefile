@@ -13,6 +13,8 @@ endif
 
 ifdef DEBUG
 	CFLAGS+=-g
+else
+	CFLAGS+=-DNDEBUG
 endif
 
 ifndef NO_FPS_CAP
