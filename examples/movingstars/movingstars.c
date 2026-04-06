@@ -1,4 +1,7 @@
 #define YST_IMPLEMENTATION
+#ifdef RELEASE
+#define YST_RELEASE
+#endif
 #include "yesterday.h"
 #include "fenster.h"
 #include <stdlib.h>
@@ -37,6 +40,7 @@ void fill_rect(struct fenster *f, int x, int y, int w, int h, uint32_t color)
             fenster_pixel(f, u, v) = color;
 }
 
+#ifndef RELEASE
 void draw_timebar(struct app_state *app)
 {
     fill_rect(app->f, 0, H - 10, W, 5, 0x808080);
@@ -88,6 +92,7 @@ void draw_timebar(struct app_state *app)
         app->is_playing = false;
     }
 }
+#endif
 
 int main() {
     uint32_t buf[W * H];
@@ -97,7 +102,7 @@ int main() {
     struct yst_context ctx;
     yst_init(&ctx, alloc_func, dealloc_func);
 
-    yst_comp_type movement_ct = yst_make_comp_type(&ctx, sizeof(struct comp_movement));
+    yst_comp_type movement_ct = yst_make_component_type(&ctx, sizeof(struct comp_movement));
 
     yst_entity_id entities[MAX_PARTICLES];
 
@@ -187,7 +192,9 @@ int main() {
             }
         }
 
+#ifndef RELEASE
         draw_timebar(&app);
+#endif
 
         if (app.is_playing)
         {

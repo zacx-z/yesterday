@@ -4,6 +4,11 @@
  */
 #ifndef YST_YESTERDAY_H
 #define YST_YESTERDAY_H
+
+#ifndef YST_RELEASE
+#define YST_REMEMBRANCE
+#endif
+
 #if !defined(YST_DEFAULT_COMP_CAPACITY)
 #define YST_DEFAULT_COMP_CAPACITY 8
 #endif
@@ -147,31 +152,35 @@ struct yst_context
     yst_dealloc_f dealloc;
     struct yst_comp_type_node *first;
     yst_entity_id next_entity;
-    struct yst_frame_data *frame_data;
-    uint64_t frame_capacity;
+    struct yst_comp_type_region *comp_type_region;
 
     yst_frame_t now;
     yst_frame_t latest;
 
-    struct yst_comp_type_region *comp_type_region;
+#ifdef YST_REMEMBRANCE
+    struct yst_frame_data *frame_data;
+    uint64_t frame_capacity;
     struct yst_frame_archive_region_header *frame_archive_region;
     struct yst_comp_forward_record_pool_header *forward_rec_pool;
     struct yst_comp_forward_record_pool_node *forward_rec_next_recycled;
+#endif
 };
 
 YST_API void yst_init(struct yst_context *ctx, yst_alloc_f alloc, yst_dealloc_f dealloc);
 YST_API void yst_finalize(struct yst_context *ctx);
 YST_API yst_entity_id yst_new_entity(struct yst_context *ctx);
 YST_API void yst_delete_entity(struct yst_context *ctx, yst_entity_id entity);
-YST_API yst_comp_type yst_make_comp_type(struct yst_context *ctx, size_t data_size);
+YST_API yst_comp_type yst_make_component_type(struct yst_context *ctx, size_t data_size);
 YST_API yst_comp_id yst_add_component(struct yst_context *ctx, yst_entity_id entity, yst_comp_type comp_type);
 YST_API yst_comp_id yst_get_component(struct yst_context *ctx, yst_entity_id entity, yst_comp_type comp_type);
 YST_API yst_comp_id yst_next_component_sibling(struct yst_context *ctx, yst_comp_id comp_id);
 YST_API void yst_delete_component(struct yst_context *ctx, yst_comp_type comp_type, yst_comp_id comp_id);
 YST_API const void* yst_read(struct yst_context *ctx, yst_comp_id id);
 YST_API void* yst_mutate(struct yst_context *ctx, yst_comp_id id);
-YST_API void yst_relive(struct yst_context *ctx, yst_frame_t time);
 YST_API void yst_elapse(struct yst_context *ctx, float delta_time);
+#ifdef YST_REMEMBRANCE
+YST_API void yst_relive(struct yst_context *ctx, yst_frame_t time);
+#endif
 
 #ifdef YST_IMPLEMENTATION
 #include <string.h>
@@ -179,6 +188,7 @@ YST_API void yst_elapse(struct yst_context *ctx, float delta_time);
 YST_LIB void* yst_realloc(struct yst_context *ctx, void* src, size_t new_size, size_t original_size, enum yst_alloc_type alloc_type);
 YST_LIB struct yst_comp_type_node* yst_alloc_comp_type(struct yst_context *ctx, size_t elem_size, uint32_t capacity);
 YST_LIB void yst_mark_comp_deleted(struct yst_context *ctx, struct yst_comp_type_node *comp_type_node, struct yst_comp_node_header *comp);
+#ifdef YST_REMEMBRANCE
 YST_LIB void* yst_alloc_archive(struct yst_context *ctx, struct yst_frame_archive_header **p_archive, size_t size);
 YST_LIB void yst_dealloc_archive_since(struct yst_context *ctx, struct yst_frame_archive_header *archive);
 YST_LIB void yst_alloc_archive_region(struct yst_context *ctx, struct yst_frame_archive_region_header **p_archive);
@@ -186,6 +196,8 @@ YST_LIB void yst_create_forward_rec_pool(struct yst_context *ctx, uint16_t capac
 YST_LIB struct yst_comp_forward_record* yst_new_forward_record(struct yst_context *ctx, struct yst_comp_node_header *next);
 YST_LIB void yst_delete_forward_record(struct yst_context *ctx, struct yst_comp_forward_record* record);
 YST_LIB void yst_fast_forward(struct yst_context *ctx, yst_frame_t time);
+#endif
+
 YST_LIB inline struct yst_comp_node_header* yst_get_comp_at(struct yst_comp_array* array, uint32_t index)
 {
     return (struct yst_comp_node_header*)(((char*)array->array) + array->elem_size * index);
@@ -198,22 +210,26 @@ YST_API void yst_init(struct yst_context *ctx, yst_alloc_f alloc, yst_dealloc_f 
     ctx->first = nullptr;
     ctx->now = 0;
     ctx->latest = 0;
-    ctx->forward_rec_pool = nullptr;
-    ctx->forward_rec_next_recycled = nullptr;
 
     ctx->comp_type_region = ctx->alloc(sizeof(struct yst_comp_type_region), YST_ALLOC_COMP_TYPE);
     ctx->comp_type_region->allocated = 0;
     ctx->comp_type_region->prev = nullptr;
+
+#ifdef YST_REMEMBRANCE
+    ctx->forward_rec_pool = nullptr;
+    ctx->forward_rec_next_recycled = nullptr;
 
     ctx->frame_archive_region = nullptr;
 
     ctx->frame_capacity = YST_INIT_FRAME_CAPACITY;
     ctx->frame_data = ctx->alloc(YST_INIT_FRAME_CAPACITY * sizeof(struct yst_frame_data), YST_ALLOC_FRAME_DATA);
     yst_create_forward_rec_pool(ctx, YST_FORWARD_REC_POOL_CAPACITY, &ctx->forward_rec_pool);
+#endif
 }
 
 YST_API void yst_finalize(struct yst_context *ctx)
 {
+#ifdef YST_REMEMBRANCE
     for (struct yst_frame_archive_region_header* archive_region = ctx->frame_archive_region; archive_region != nullptr;)
     {
         struct yst_frame_archive_region_header* prev = archive_region->prev;
@@ -227,6 +243,7 @@ YST_API void yst_finalize(struct yst_context *ctx)
         ctx->dealloc(pool, YST_ALLOC_FORWARD_RECORD);
         pool = prev;
     }
+#endif
     for (struct yst_comp_type_node *node = ctx->first; node != nullptr;)
     {
         struct yst_comp_type_node *next = node->next;
@@ -268,7 +285,7 @@ YST_API void yst_delete_entity(struct yst_context *ctx, yst_entity_id entity)
     }
 }
 
-YST_API yst_comp_type yst_make_comp_type(struct yst_context *ctx, size_t data_size)
+YST_API yst_comp_type yst_make_component_type(struct yst_context *ctx, size_t data_size)
 {
     struct yst_comp_type_node** p = &ctx->first;
     while (*p != nullptr)
@@ -407,6 +424,7 @@ YST_API void* yst_mutate(struct yst_context *ctx, yst_comp_id id)
     return (char*)header + sizeof(struct yst_comp_node_header);
 }
 
+#ifdef YST_REMEMBRANCE
 YST_API void yst_relive(struct yst_context *ctx, yst_frame_t time)
 {
     if (time == ctx->now) return;
@@ -589,6 +607,16 @@ YST_LIB void yst_fast_forward(struct yst_context *ctx, yst_frame_t time)
     ctx->now = time;
 }
 
+#else // YST_REMEMBRANCE
+
+YST_API void yst_elapse(struct yst_context *ctx, float delta_time)
+{
+    ++ctx->now;
+    ctx->latest = ctx->now;
+}
+
+#endif // YST_REMEMBRANCE
+
 ///////////////////////////////////////////////////////////////////////////////
 // Memory
 ///////////////////////////////////////////////////////////////////////////////
@@ -635,6 +663,8 @@ YST_LIB void yst_mark_comp_deleted(struct yst_context *ctx, struct yst_comp_type
     comp->next_recycled = comp_type_node->recycled;
     comp_type_node->recycled = comp;
 }
+
+#ifdef YST_REMEMBRANCE
 
 YST_LIB void* yst_alloc_archive(struct yst_context *ctx, struct yst_frame_archive_header **p_archive, size_t size)
 {
@@ -724,6 +754,8 @@ YST_LIB void yst_delete_forward_record(struct yst_context *ctx, struct yst_comp_
     node->next_free = ctx->forward_rec_next_recycled;
     ctx->forward_rec_next_recycled = node;
 }
+
+#endif // YST_REMEMBRANCE
 
 #endif // YST_IMPLEMENTATION
 

@@ -17,6 +17,10 @@ else
 	CFLAGS+=-DNDEBUG
 endif
 
+ifdef RELEASE
+	CFLAGS+=-DRELEASE
+endif
+
 ifndef NO_FPS_CAP
 	ifndef FPS
 		FPS=60
