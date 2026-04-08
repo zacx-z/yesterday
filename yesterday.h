@@ -178,6 +178,12 @@ YST_API void yst_delete_component(struct yst_context *ctx, yst_comp_type comp_ty
 YST_API const void* yst_read(struct yst_context *ctx, yst_comp_id id);
 YST_API void* yst_mutate(struct yst_context *ctx, yst_comp_id id);
 YST_API void yst_elapse(struct yst_context *ctx, float delta_time);
+
+YST_API yst_comp_id yst_first(struct yst_context *ctx, yst_comp_type comp_type);
+YST_API yst_comp_id yst_next(struct yst_context *ctx, yst_comp_id comp_id);
+
+#define yst_foreach(ctx, comp, comp_type) for (yst_comp_id comp = yst_first(ctx, comp_type); comp.array != 0; comp = yst_next(ctx, comp))
+
 #ifdef YST_REMEMBRANCE
 YST_API void yst_relive(struct yst_context *ctx, yst_frame_t time);
 #endif
@@ -413,6 +419,40 @@ YST_API const void* yst_read(struct yst_context *ctx, yst_comp_id id)
     if (header->flags & YST_COMP_INVALID) return nullptr;
 
     return (char*)header + sizeof(struct yst_comp_node_header);
+}
+
+YST_API yst_comp_id yst_first(struct yst_context *ctx, yst_comp_type comp_type)
+{
+    struct yst_comp_array *array = &comp_type->array;
+    if (array->elem_count == 0) return (yst_comp_id){
+        .array = nullptr,
+        .index = 0,
+    };
+
+    yst_comp_id ret = (yst_comp_id){ .array = array, .index = 0 };
+    if (yst_get_comp_at(array, ret.index)->flags & YST_COMP_INVALID)
+        return yst_next(ctx, ret);
+
+    return ret;
+}
+
+YST_API yst_comp_id yst_next(struct yst_context *ctx, yst_comp_id comp_id)
+{
+    struct yst_comp_array *array = comp_id.array;
+    if (array == nullptr) return comp_id;
+
+    ++comp_id.index;
+    while (comp_id.index < array->elem_count && (yst_get_comp_at(array, comp_id.index)->flags & YST_COMP_INVALID))
+    {
+        ++comp_id.index;
+    }
+
+    if (comp_id.index != array->elem_count) return comp_id;
+
+    return (yst_comp_id){
+        .array = nullptr,
+        .index = 0,
+    };
 }
 
 YST_API void* yst_mutate(struct yst_context *ctx, yst_comp_id id)

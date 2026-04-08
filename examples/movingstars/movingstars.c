@@ -146,10 +146,8 @@ int main() {
 
         if (app.is_playing)
         {
-            for (int i = 0; i < MAX_PARTICLES; ++i)
+            yst_foreach (&ctx, comp, movement_ct)
             {
-                yst_entity_id entity = entities[i];
-                yst_comp_id comp = yst_get_component(&ctx, entity, movement_ct);
                 struct comp_movement* movement = (struct comp_movement*)yst_mutate(&ctx, comp);
                 movement->x += movement->sx * delta_time;
                 movement->y += movement->sy * delta_time;
@@ -179,10 +177,8 @@ int main() {
 
         memset(buf, 0, W * H * sizeof(uint32_t));
 
-        for (int i = 0; i < MAX_PARTICLES; ++i)
+        yst_foreach (&ctx, comp, movement_ct)
         {
-            yst_entity_id entity = entities[i];
-            yst_comp_id comp = yst_get_component(&ctx, entity, movement_ct);
             const struct comp_movement* movement = (const struct comp_movement*)yst_read(&ctx, comp);
             int x = (int)movement->x;
             int y = (int)movement->y;
