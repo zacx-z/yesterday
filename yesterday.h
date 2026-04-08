@@ -1,5 +1,5 @@
 /*
- * yesterday - v0.1.0 - a minimalistic ECS implementation that allows you to trace back in time to a moment you wish to relive.
+ * yesterday - v0.1.1 - a minimalistic ECS implementation that allows you to trace back in time to a moment you wish to relive.
  * by Zack Zhang (github.com/zacx-z) 2026
  */
 #ifndef YST_YESTERDAY_H
@@ -69,13 +69,15 @@ typedef void (*yst_dealloc_f)(void* ptr, enum yst_alloc_type alloc_type);
 
 struct yst_comp_node_header
 {
+#ifdef YST_REMEMBRANCE
     struct yst_comp_node_header *prev_in_time;
     struct yst_comp_forward_record *forward_in_time;
+    yst_frame_t timestamp;
+#endif
     struct yst_comp_node_header *next_recycled;
     yst_entity_id entity;
     uint32_t next_sibling; // next component of the same type on the same entity
     yst_flags flags;
-    yst_frame_t timestamp;
 };
 
 struct yst_comp_forward_record
@@ -338,13 +340,15 @@ YST_API yst_comp_id yst_add_component(struct yst_context *ctx, yst_entity_id ent
     uint32_t* id = &comp_type->lookup[entity];
 
     *header = (struct yst_comp_node_header){
+#ifdef YST_REMEMBRANCE
         .prev_in_time = nullptr,
         .forward_in_time = nullptr,
+        .timestamp = ctx->now,
+#endif
         .next_recycled = nullptr,
         .entity = entity,
         .next_sibling = *id,
         .flags = YST_COMP_DIRTY,
-        .timestamp = ctx->now,
     };
 
     *id = index + 1;
