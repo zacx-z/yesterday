@@ -172,6 +172,10 @@ YST_API void yst_init(struct yst_context *ctx, yst_alloc_f alloc, yst_dealloc_f 
 YST_API void yst_finalize(struct yst_context *ctx);
 YST_API yst_entity_id yst_new_entity(struct yst_context *ctx);
 YST_API void yst_delete_entity(struct yst_context *ctx, yst_entity_id entity);
+/**
+ * Delete all entities and history.
+ */
+YST_API void yst_clear(struct yst_context *ctx);
 YST_API yst_comp_type yst_make_component_type(struct yst_context *ctx, size_t data_size);
 YST_API yst_comp_id yst_add_component(struct yst_context *ctx, yst_entity_id entity, yst_comp_type comp_type);
 YST_API yst_comp_id yst_get_component(struct yst_context *ctx, yst_entity_id entity, yst_comp_type comp_type);
@@ -218,6 +222,7 @@ YST_API void yst_init(struct yst_context *ctx, yst_alloc_f alloc, yst_dealloc_f 
     ctx->first = nullptr;
     ctx->now = 0;
     ctx->latest = 0;
+    ctx->next_entity = 0;
 
     ctx->comp_type_region = ctx->alloc(sizeof(struct yst_comp_type_region), YST_ALLOC_COMP_TYPE);
     ctx->comp_type_region->allocated = 0;
@@ -291,6 +296,39 @@ YST_API void yst_delete_entity(struct yst_context *ctx, yst_entity_id entity)
         }
         node->lookup[entity] = 0;
     }
+}
+
+YST_API void yst_clear(struct yst_context *ctx)
+{
+    for (struct yst_comp_type_node *comp_type = ctx->first; comp_type != nullptr; comp_type = comp_type->next)
+    {
+        comp_type->recycled = nullptr;
+        comp_type->array.elem_count = 0;
+
+        memset(comp_type->lookup, 0, comp_type->lookup_capacity * sizeof(uint32_t));
+    }
+
+    struct yst_comp_forward_record_pool_header *pool = ctx->forward_rec_pool;
+    while (pool->prev != nullptr)
+    {
+        struct yst_comp_forward_record_pool_header *prev = pool->prev;
+        ctx->dealloc(pool, YST_ALLOC_FORWARD_RECORD);
+        pool = prev;
+    }
+    ctx->forward_rec_pool = pool;
+    ctx->forward_rec_next_recycled = nullptr;
+
+    for(struct yst_frame_archive_region_header *archive_region = ctx->frame_archive_region; archive_region != nullptr;)
+    {
+        struct yst_frame_archive_region_header *prev = archive_region->prev;
+        ctx->dealloc(archive_region, YST_ALLOC_ARCHIVE);
+        archive_region = prev;
+    }
+    ctx->frame_archive_region = nullptr;
+
+    ctx->next_entity = 0;
+    ctx->now = 0;
+    ctx->latest = 0;
 }
 
 YST_API yst_comp_type yst_make_component_type(struct yst_context *ctx, size_t data_size)
