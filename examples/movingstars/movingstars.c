@@ -94,6 +94,21 @@ void draw_timebar(struct app_state *app)
 }
 #endif
 
+void create_random_particles(struct yst_context *ctx, yst_comp_type movement_ct, int number)
+{
+    for (int i = 0; i < number; ++i)
+    {
+        yst_entity_id entity = yst_new_entity(ctx);
+        yst_comp_id comp = yst_add_component(ctx, entity, movement_ct);
+        struct comp_movement* movement = (struct comp_movement*)yst_mutate(ctx, comp);
+
+        movement->x = rand() / (float)RAND_MAX * W;
+        movement->y = rand() / (float)RAND_MAX * H;
+        movement->sx = (rand() / (float)RAND_MAX - 0.5f) * 20;
+        movement->sy = (rand() / (float)RAND_MAX - 0.5f) * 20;
+    }
+}
+
 int main() {
     uint32_t buf[W * H];
     struct fenster f = { .title = "moving stars", .width = W, .height = H, .buf = buf };
@@ -104,23 +119,9 @@ int main() {
 
     yst_comp_type movement_ct = yst_make_component_type(&ctx, sizeof(struct comp_movement));
 
-    yst_entity_id entities[MAX_PARTICLES];
-
     struct app_state app = { .f = &f, .ctx = &ctx, .is_playing = true };
 
-    for (int i = 0; i < MAX_PARTICLES; ++i)
-    {
-        yst_entity_id entity = yst_new_entity(&ctx);
-        yst_comp_id comp = yst_add_component(&ctx, entity, movement_ct);
-        struct comp_movement* movement = (struct comp_movement*)yst_mutate(&ctx, comp);
-
-        movement->x = rand() / (float)RAND_MAX * W;
-        movement->y = rand() / (float)RAND_MAX * H;
-        movement->sx = (rand() / (float)RAND_MAX - 0.5f) * 20;
-        movement->sy = (rand() / (float)RAND_MAX - 0.5f) * 20;
-
-        entities[i] = entity;
-    }
+    create_random_particles(&ctx, movement_ct, MAX_PARTICLES);
 
     int64_t cur_time = fenster_time();
 
@@ -132,6 +133,12 @@ int main() {
         if (f.keys[32] && !app.was_key_down[32])
         {
             app.is_playing = !app.is_playing;
+        }
+
+        if (f.keys['R'] && !app.was_key_down['R'])
+        {
+            yst_clear(&ctx);
+            create_random_particles(&ctx, movement_ct, MAX_PARTICLES);
         }
 
         int64_t next_time = fenster_time();
