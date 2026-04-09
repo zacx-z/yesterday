@@ -37,6 +37,9 @@
 #include <stdint.h>
 #include <assert.h>
 
+#include <unistd.h>
+#include <stdio.h>
+
 #if !defined(__STDC_VERSION__) || __STDC_VERSION__ < 202311L
 #define nullptr 0
 #endif
@@ -67,6 +70,10 @@ enum yst_alloc_type
 
 typedef void* (*yst_alloc_f)(size_t size, enum yst_alloc_type alloc_type);
 typedef void (*yst_dealloc_f)(void* ptr, enum yst_alloc_type alloc_type);
+#ifdef YST_REMEMBRANCE
+typedef void (*yst_serialize_f)(FILE *stream, void* comp);
+typedef void (*yst_deserialize_f)(FILE *stream, void* comp);
+#endif
 
 struct yst_comp_node_header
 {
@@ -101,8 +108,13 @@ struct yst_comp_type_node
     uint32_t *lookup; // lookup by entity id
     yst_entity_id lookup_capacity;
     struct yst_comp_array array;
+#ifdef YST_REMEMBRANCE
+    yst_serialize_f serialize;
+    yst_deserialize_f deserialize;
+#endif
 };
 
+#ifdef YST_REMEMBRANCE
 struct yst_comp_forward_record_pool_header
 {
     struct yst_comp_forward_record_pool_header *prev;
@@ -116,19 +128,12 @@ struct yst_comp_forward_record_pool_node
     struct yst_comp_forward_record data;
 };
 
-typedef struct yst_comp_type_node *yst_comp_type;
-
-typedef struct yst_comp_id
-{
-    struct yst_comp_array *array;
-    uint32_t index;
-} yst_comp_id;
-
 struct yst_frame_archive_header
 {
     struct yst_frame_archive_header* prev;
     struct yst_frame_archive_region_header *region;
     struct yst_comp_type_node *comp_type;
+    uint32_t elem_count;
     struct yst_comp_node_header *recycled;
 };
 
@@ -150,6 +155,27 @@ struct yst_frame_archive_region_header
     struct yst_frame_archive_region_header *prev;
     void* next_alloc_ptr;
 };
+
+struct yst_serializable_comp_header
+{
+    uint32_t index;
+    yst_frame_t timestamp;
+    uint32_t prev_id;
+    yst_frame_t prev_timestamp;
+    yst_entity_id entity;
+    uint32_t next_sibling;
+    yst_flags flags;
+};
+#endif
+
+typedef struct yst_comp_type_node *yst_comp_type;
+
+typedef struct yst_comp_id
+{
+    struct yst_comp_array *array;
+    uint32_t index;
+} yst_comp_id;
+
 
 struct yst_context
 {
@@ -195,6 +221,9 @@ YST_API yst_comp_id yst_next(struct yst_context *ctx, yst_comp_id comp_id);
 
 #ifdef YST_REMEMBRANCE
 YST_API void yst_relive(struct yst_context *ctx, yst_frame_t time);
+
+YST_API void yst_save(struct yst_context *ctx, FILE *stream);
+YST_API void yst_load(struct yst_context *ctx, FILE *stream);
 #endif
 
 #ifdef YST_IMPLEMENTATION
@@ -204,13 +233,18 @@ YST_LIB void* yst_realloc(struct yst_context *ctx, void* src, size_t new_size, s
 YST_LIB struct yst_comp_type_node* yst_alloc_comp_type(struct yst_context *ctx, size_t elem_size, uint32_t capacity);
 YST_LIB void yst_mark_comp_deleted(struct yst_context *ctx, struct yst_comp_type_node *comp_type_node, struct yst_comp_node_header *comp);
 #ifdef YST_REMEMBRANCE
-YST_LIB void* yst_alloc_archive(struct yst_context *ctx, struct yst_frame_archive_header **p_archive, yst_comp_type comp_type, size_t size);
+YST_LIB void* yst_alloc_archive(struct yst_context *ctx, struct yst_frame_archive_header **p_archive, yst_comp_type comp_type, uint32_t elem_count);
 YST_LIB void yst_dealloc_archive_since(struct yst_context *ctx, struct yst_frame_archive_header *archive);
 YST_LIB void yst_alloc_archive_region(struct yst_context *ctx, struct yst_frame_archive_region_header **p_archive);
 YST_LIB void yst_create_forward_rec_pool(struct yst_context *ctx, uint16_t capacity, struct yst_comp_forward_record_pool_header** p_header);
 YST_LIB struct yst_comp_forward_record* yst_new_forward_record(struct yst_context *ctx, struct yst_comp_node_header *next);
 YST_LIB void yst_delete_forward_record(struct yst_context *ctx, struct yst_comp_forward_record* record);
 YST_LIB void yst_fast_forward(struct yst_context *ctx, yst_frame_t time);
+
+YST_LIB void yst_build_serializable_header_in_place(struct yst_context *ctx, struct yst_comp_node_header *header, uint32_t comp_index);
+YST_LIB void yst_serialize_comp(struct yst_context *ctx, FILE *stream, struct yst_comp_type_node *comp_type, struct yst_serializable_comp_header *header);
+YST_LIB void yst_deserialize_comp(struct yst_context *ctx, FILE *stream, struct yst_comp_type_node *comp_type, struct yst_serializable_comp_header *header);
+YST_LIB void yst_reconstruct_comp_headers_from(struct yst_context *ctx, struct yst_comp_type_node *comp_type, struct yst_serializable_comp_header *header);
 #endif
 
 YST_LIB inline struct yst_comp_node_header* yst_get_comp_at(struct yst_comp_array* array, uint32_t index)
@@ -552,7 +586,7 @@ YST_API void yst_relive(struct yst_context *ctx, yst_frame_t time)
                 }
             }
 
-            if ((header->flags & YST_COMP_INVALID) && header->prev_in_time == nullptr) continue; 
+            if ((header->flags & YST_COMP_INVALID) && header->prev_in_time == nullptr) continue;
 
             if (header->forward_in_time)
             {
@@ -685,7 +719,7 @@ YST_API void yst_elapse(struct yst_context *ctx, float delta_time)
         if (archive_count > 0)
         {
             size_t elem_size = comp_type->array.elem_size;
-            void* archive = yst_alloc_archive(ctx, &ctx->frame_data[ctx->now].archive, comp_type, archive_count * elem_size);
+            void* archive = yst_alloc_archive(ctx, &ctx->frame_data[ctx->now].archive, comp_type, archive_count);
             uint32_t cur_archive_index = 0;
             for (uint32_t i = 0; i < array->elem_count; ++i)
             {
@@ -754,6 +788,140 @@ YST_LIB void yst_fast_forward(struct yst_context *ctx, yst_frame_t time)
     ctx->now = time;
 }
 
+static_assert(sizeof(struct yst_serializable_comp_header) <= sizeof(struct yst_comp_node_header), "the serializable header should be no larger than the component header");
+
+YST_API void yst_save(struct yst_context *ctx, FILE *stream)
+{
+    yst_relive(ctx, 0);
+
+    fwrite(&ctx->latest, sizeof(ctx->latest), 1, stream);
+
+    for (yst_frame_t f = 0; f < ctx->latest; f++)
+    {
+        fwrite(&ctx->frame_data[f].time, sizeof(float), 1, stream);
+    }
+
+    for (struct yst_comp_type_node* comp_type = ctx->first; comp_type != nullptr; comp_type = comp_type->next)
+    {
+        struct yst_comp_array* array = &comp_type->array;
+        fwrite(&array->elem_count, sizeof(array->elem_count), 1, stream);
+        for (yst_frame_t f = 0; f < ctx->latest; f++)
+        {
+            struct yst_frame_archive_header* archive = ctx->frame_data[f].archive;
+
+            while (archive != nullptr && archive->comp_type != comp_type)
+                archive = archive->prev;
+            if (archive != nullptr)
+            {
+                fwrite(&archive->elem_count, sizeof(archive->elem_count), 1, stream);
+                fwrite(&f, sizeof(f), 1, stream);
+            }
+        }
+        uint32_t ar_end_mark = 0;
+        fwrite(&ar_end_mark, sizeof(ar_end_mark), 1, stream);
+        for (uint32_t i = 0; i < array->elem_count; ++i)
+        {
+            struct yst_comp_node_header* current = yst_get_comp_at(array, i);
+            struct yst_comp_node_header* header = current;
+            if (header->forward_in_time) header = header->forward_in_time->next_in_time->prev_in_time;
+
+            assert(header->prev_in_time == nullptr);
+
+            while (header->forward_in_time != nullptr)
+            {
+                struct yst_comp_node_header* next = header->forward_in_time->next_in_time;
+                yst_delete_forward_record(ctx, header->forward_in_time);
+
+                yst_build_serializable_header_in_place(ctx, header, i);
+                fwrite(header, sizeof(struct yst_serializable_comp_header), 1, stream);
+                yst_serialize_comp(ctx, stream, comp_type, (struct yst_serializable_comp_header*)header);
+
+                header = next;
+            }
+
+            // save the last record
+            yst_build_serializable_header_in_place(ctx, header, i);
+            fwrite(header, sizeof(struct yst_serializable_comp_header), 1, stream);
+            yst_serialize_comp(ctx, stream, comp_type, (struct yst_serializable_comp_header*)header);
+
+            yst_reconstruct_comp_headers_from(ctx, comp_type, (struct yst_serializable_comp_header*)header);
+            memcpy(current, header, array->elem_size);
+        }
+        struct yst_serializable_comp_header end_mark = (struct yst_serializable_comp_header){
+            .index = -1
+        };
+        fwrite(&end_mark, sizeof(end_mark), 1, stream);
+    }
+
+    ctx->now = ctx->latest;
+}
+
+YST_API void yst_load(struct yst_context *ctx, FILE *stream)
+{
+    yst_clear(ctx);
+
+    fread(&ctx->latest, sizeof(ctx->latest), 1, stream);
+    if (ctx->latest > ctx->frame_capacity)
+    {
+        yst_realloc(ctx, ctx->frame_data, ctx->latest * 2 * sizeof(struct yst_frame_data), ctx->frame_capacity * sizeof(struct yst_frame_data), YST_ALLOC_FRAME_DATA);
+        ctx->frame_capacity = ctx->latest * 2;
+    }
+
+    for (yst_frame_t f = 0; f < ctx->latest; ++f)
+    {
+        fread(&ctx->frame_data[f].time, sizeof(float), 1, stream);
+    }
+
+    for (struct yst_comp_type_node* comp_type = ctx->first; comp_type != nullptr; comp_type = comp_type->next)
+    {
+        struct yst_comp_array* array = &comp_type->array;
+        fread(&array->elem_count, sizeof(array->elem_count), 1, stream);
+
+        if (array->elem_count > array->capacity)
+        {
+            comp_type->array.array = yst_realloc(ctx, comp_type->array.array, array->elem_count * comp_type->array.elem_size, comp_type->array.capacity * comp_type->array.elem_size, YST_ALLOC_COMP);
+            comp_type->array.capacity = array->elem_count;
+        }
+
+        while (1)
+        {
+            uint32_t count;
+            fread(&count, sizeof(uint32_t), 1, stream);
+            if (count == 0) break;
+            yst_frame_t f;
+            fread(&f, sizeof(f), 1, stream);
+            yst_alloc_archive(ctx, &ctx->frame_data[f].archive, comp_type, count);
+        }
+
+        while (1)
+        {
+            struct yst_serializable_comp_header buffer;
+            size_t bytes = fread(&buffer, sizeof(struct yst_serializable_comp_header), 1, stream);
+            if (bytes < 1)
+            {
+                // error
+                break;
+            }
+            if (buffer.index == -1) break;
+
+            yst_deserialize_comp(ctx, stream, comp_type, &buffer);
+
+            void* p_mem = (char*)ctx->frame_data[buffer.timestamp].archive + sizeof(struct yst_frame_archive_header) + buffer.index * comp_type->array.elem_size;
+            memcpy(p_mem, &buffer, comp_type->array.elem_size);
+
+            yst_get_comp_at(array, buffer.index)->prev_in_time = p_mem;
+        }
+        for (uint32_t i = 0; i < array->elem_count; ++i)
+        {
+            struct yst_comp_node_header* current = yst_get_comp_at(array, i);
+            struct yst_serializable_comp_header* header = (struct yst_serializable_comp_header*)current->prev_in_time;
+            yst_reconstruct_comp_headers_from(ctx, comp_type, header);
+            memcpy(current, header, comp_type->array.elem_size);
+        }
+    }
+    ctx->now = ctx->latest;
+}
+
 #else // YST_REMEMBRANCE
 
 YST_API void yst_elapse(struct yst_context *ctx, float delta_time)
@@ -801,6 +969,8 @@ YST_LIB struct yst_comp_type_node* yst_alloc_comp_type(struct yst_context *ctx, 
     yst_entity_id lookup_capacity = ctx->next_entity * 2 > YST_DEFAULT_COMP_CAPACITY ? ctx->next_entity * 2 : YST_DEFAULT_COMP_CAPACITY;
     ret->lookup = yst_realloc(ctx, ret->lookup, lookup_capacity * sizeof(yst_entity_id), 0, YST_ALLOC_ENTITY_LOOKUP);
     ret->lookup_capacity = lookup_capacity;
+    ret->serialize = nullptr;
+    ret->deserialize = nullptr;
     return ret;
 }
 
@@ -813,9 +983,9 @@ YST_LIB void yst_mark_comp_deleted(struct yst_context *ctx, struct yst_comp_type
 
 #ifdef YST_REMEMBRANCE
 
-YST_LIB void* yst_alloc_archive(struct yst_context *ctx, struct yst_frame_archive_header **p_archive, yst_comp_type comp_type, size_t size)
+YST_LIB void* yst_alloc_archive(struct yst_context *ctx, struct yst_frame_archive_header **p_archive, yst_comp_type comp_type, uint32_t elem_count)
 {
-    size_t total_size = size + sizeof(struct yst_frame_archive_header);
+    size_t total_size = elem_count * comp_type->array.elem_size + sizeof(struct yst_frame_archive_header);
     if (!ctx->frame_archive_region || ((char*)ctx->frame_archive_region->next_alloc_ptr - (char*)ctx->frame_archive_region) + total_size > YST_ARCHIVE_CHUNK_SIZE)
     {
         yst_alloc_archive_region(ctx, &ctx->frame_archive_region);
@@ -824,10 +994,13 @@ YST_LIB void* yst_alloc_archive(struct yst_context *ctx, struct yst_frame_archiv
     assert(total_size <= YST_ARCHIVE_CHUNK_SIZE - sizeof(struct yst_frame_archive_region_header));
     struct yst_frame_archive_header *new_archive = (struct yst_frame_archive_header*)ctx->frame_archive_region->next_alloc_ptr;
 
-    new_archive->prev = *p_archive;
-    new_archive->region = ctx->frame_archive_region;
-    new_archive->comp_type = comp_type;
-    new_archive->recycled = comp_type->recycled;
+    *new_archive = (struct yst_frame_archive_header){
+        .prev = *p_archive,
+        .region = ctx->frame_archive_region,
+        .comp_type = comp_type,
+        .elem_count = elem_count,
+        .recycled = comp_type->recycled,
+    };
 
     *p_archive = new_archive;
     ctx->frame_archive_region->next_alloc_ptr = (char*)ctx->frame_archive_region->next_alloc_ptr + total_size;
@@ -902,6 +1075,98 @@ YST_LIB void yst_delete_forward_record(struct yst_context *ctx, struct yst_comp_
     struct yst_comp_forward_record_pool_node *node = (struct yst_comp_forward_record_pool_node*)((char*)record - offsetof(struct yst_comp_forward_record_pool_node, data));
     node->next_free = ctx->forward_rec_next_recycled;
     ctx->forward_rec_next_recycled = node;
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// Serialization
+///////////////////////////////////////////////////////////////////////////////
+
+YST_LIB void yst_build_serializable_header_in_place(struct yst_context *ctx, struct yst_comp_node_header *header, uint32_t comp_index)
+{
+    struct yst_serializable_comp_header *prev_header = (struct yst_serializable_comp_header*)header->prev_in_time;
+
+    uint32_t prev_id;
+    yst_frame_t prev_timestamp;
+    if (prev_header != nullptr)
+    {
+        prev_id = prev_header->index + 1;
+        prev_timestamp = prev_header->timestamp;
+    }
+    else
+    {
+        prev_id = 0;
+        prev_timestamp = 0;
+    }
+
+    *(struct yst_serializable_comp_header*)header = (struct yst_serializable_comp_header){
+        .index = comp_index,
+        .timestamp = header->timestamp,
+        .prev_id = prev_id,
+        .prev_timestamp = prev_timestamp,
+        .entity = header->entity,
+        .next_sibling = header->next_sibling,
+        .flags = header->flags,
+    };
+}
+
+YST_LIB void yst_serialize_comp(struct yst_context *ctx, FILE *stream, struct yst_comp_type_node *comp_type, struct yst_serializable_comp_header *header)
+{
+    void* data = (char*)header + sizeof(struct yst_comp_node_header);
+    if (comp_type->serialize) comp_type->serialize(stream, data);
+    else {
+        size_t data_size = comp_type->array.elem_size - sizeof(struct yst_comp_node_header);
+        fwrite(&data_size, sizeof(data_size), 1, stream);
+        fwrite(data, data_size, 1, stream);
+    }
+}
+
+YST_LIB void yst_deserialize_comp(struct yst_context *ctx, FILE *stream, struct yst_comp_type_node *comp_type, struct yst_serializable_comp_header *header)
+{
+    void* data = (char*)header + sizeof(struct yst_comp_node_header);
+    if (comp_type->deserialize) comp_type->deserialize(stream, data);
+    else {
+        size_t data_size;
+        fread(&data_size, sizeof(data_size), 1, stream);
+        fread(data, data_size, 1, stream);
+    }
+}
+
+YST_LIB void yst_reconstruct_comp_headers_from(struct yst_context *ctx, struct yst_comp_type_node *comp_type, struct yst_serializable_comp_header *header)
+{
+    while (header != nullptr)
+    {
+        uint32_t prev_id = header->prev_id;
+        struct yst_serializable_comp_header *prev = nullptr;
+
+        if (prev_id > 0)
+        {
+            for (struct yst_frame_archive_header *archive = ctx->frame_data[header->prev_timestamp].archive; archive != nullptr; archive = archive->prev)
+            {
+                if (archive->comp_type == comp_type)
+                {
+                    void* next_mem = (char*)archive + sizeof(struct yst_frame_archive_header) + (prev_id - 1) * comp_type->array.elem_size;
+                    prev = (struct yst_serializable_comp_header*)next_mem;
+                    break;
+                }
+            }
+
+            assert(prev != nullptr);
+        }
+
+        // FIXME: the next_recycled info is lost; should save it temporarily somehow
+        *(struct yst_comp_node_header*)header = (struct yst_comp_node_header){
+            .prev_in_time = (struct yst_comp_node_header*)prev,
+            .forward_in_time = nullptr,
+            .timestamp = header->timestamp,
+            .next_recycled = nullptr,
+            .entity = header->entity,
+            .next_sibling = header->next_sibling,
+            .flags = header->flags,
+        };
+
+        header = prev;
+    }
+    fflush(stdout);
 }
 
 #endif // YST_REMEMBRANCE
