@@ -195,10 +195,6 @@ int main() {
             }
         }
 
-#ifndef RELEASE
-        draw_timebar(&app);
-#endif
-
         if (app.is_playing)
         {
             yst_elapse(&ctx, delta_time);
@@ -208,6 +204,10 @@ int main() {
                 fflush(stdout);
             }
         }
+
+#ifndef RELEASE
+        draw_timebar(&app);
+#endif
 
         memcpy(app.was_key_down, f.keys, sizeof(f.keys));
     }
