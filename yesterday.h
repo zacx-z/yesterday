@@ -1,5 +1,5 @@
 /*
- * yesterday - v0.1.1 - a minimalistic ECS implementation that allows you to trace back in time to a moment you wish to relive.
+ * yesterday - v0.1.2 - a minimalistic ECS implementation that allows you to trace back in time to a moment you wish to relive.
  * by Zack Zhang (github.com/zacx-z) 2026
  */
 #ifndef YST_YESTERDAY_H
@@ -49,8 +49,9 @@ typedef uint8_t yst_flags;
 
 enum yst_node_flags
 {
-    YST_COMP_DIRTY   = 1 << 1,
-    YST_COMP_INVALID = 1 << 2,
+    YST_COMP_DIRTY   = 1 << 0,
+    YST_COMP_INVALID = 1 << 1,
+    YST_COMP_ADD = 1 << 2,
 };
 
 enum yst_alloc_type
@@ -127,6 +128,8 @@ struct yst_frame_archive_header
 {
     struct yst_frame_archive_header* prev;
     struct yst_frame_archive_region_header *region;
+    struct yst_comp_type_node *comp_type;
+    struct yst_comp_node_header *recycled;
 };
 
 struct yst_frame_data
@@ -201,7 +204,7 @@ YST_LIB void* yst_realloc(struct yst_context *ctx, void* src, size_t new_size, s
 YST_LIB struct yst_comp_type_node* yst_alloc_comp_type(struct yst_context *ctx, size_t elem_size, uint32_t capacity);
 YST_LIB void yst_mark_comp_deleted(struct yst_context *ctx, struct yst_comp_type_node *comp_type_node, struct yst_comp_node_header *comp);
 #ifdef YST_REMEMBRANCE
-YST_LIB void* yst_alloc_archive(struct yst_context *ctx, struct yst_frame_archive_header **p_archive, size_t size);
+YST_LIB void* yst_alloc_archive(struct yst_context *ctx, struct yst_frame_archive_header **p_archive, yst_comp_type comp_type, size_t size);
 YST_LIB void yst_dealloc_archive_since(struct yst_context *ctx, struct yst_frame_archive_header *archive);
 YST_LIB void yst_alloc_archive_region(struct yst_context *ctx, struct yst_frame_archive_region_header **p_archive);
 YST_LIB void yst_create_forward_rec_pool(struct yst_context *ctx, uint16_t capacity, struct yst_comp_forward_record_pool_header** p_header);
@@ -308,6 +311,7 @@ YST_API void yst_clear(struct yst_context *ctx)
         memset(comp_type->lookup, 0, comp_type->lookup_capacity * sizeof(uint32_t));
     }
 
+#ifdef YST_REMEMBRANCE
     struct yst_comp_forward_record_pool_header *pool = ctx->forward_rec_pool;
     while (pool->prev != nullptr)
     {
@@ -325,6 +329,7 @@ YST_API void yst_clear(struct yst_context *ctx)
         archive_region = prev;
     }
     ctx->frame_archive_region = nullptr;
+#endif
 
     ctx->next_entity = 0;
     ctx->now = 0;
@@ -345,12 +350,19 @@ YST_API yst_comp_type yst_make_component_type(struct yst_context *ctx, size_t da
 YST_API yst_comp_id yst_add_component(struct yst_context *ctx, yst_entity_id entity, yst_comp_type comp_type)
 {
     struct yst_comp_node_header *header;
+#ifdef YST_REMEMBRANCE
+    struct yst_comp_node_header *prev_in_time;
+#endif
     uint32_t index;
     if (comp_type->recycled)
     {
         header = comp_type->recycled;
         comp_type->recycled = header->next_recycled;
         index = ((char*)header - (char*)comp_type->array.array) / comp_type->array.elem_size;
+        header->next_recycled = nullptr;
+#ifdef YST_REMEMBRANCE
+        prev_in_time = header->prev_in_time;
+#endif
     }
     else
     {
@@ -363,6 +375,9 @@ YST_API yst_comp_id yst_add_component(struct yst_context *ctx, yst_entity_id ent
 
         void* comp = yst_get_comp_at(&comp_type->array, index);
         header = (struct yst_comp_node_header*)comp;
+#ifdef YST_REMEMBRANCE
+        prev_in_time = nullptr;
+#endif
     }
 
     if (entity >= comp_type->lookup_capacity)
@@ -379,14 +394,14 @@ YST_API yst_comp_id yst_add_component(struct yst_context *ctx, yst_entity_id ent
 
     *header = (struct yst_comp_node_header){
 #ifdef YST_REMEMBRANCE
-        .prev_in_time = nullptr,
+        .prev_in_time = prev_in_time,
         .forward_in_time = nullptr,
         .timestamp = ctx->now,
 #endif
         .next_recycled = nullptr,
         .entity = entity,
         .next_sibling = *id,
-        .flags = YST_COMP_DIRTY,
+        .flags = YST_COMP_DIRTY | YST_COMP_ADD,
     };
 
     *id = index + 1;
@@ -519,10 +534,23 @@ YST_API void yst_relive(struct yst_context *ctx, yst_frame_t time)
     for (struct yst_comp_type_node* comp_type = ctx->first; comp_type != nullptr; comp_type = comp_type->next)
     {
         struct yst_comp_array* array = &comp_type->array;
+        yst_frame_t closest_time = 0;
         for (uint32_t i = 0; i < array->elem_count; ++i)
         {
             struct yst_comp_node_header* current = yst_get_comp_at(array, i);
             struct yst_comp_node_header* header = current;
+
+            if (current->flags & YST_COMP_DIRTY)
+            {
+                // NOTE: latest changes will not be saved
+                if ((current->flags & YST_COMP_ADD) && current->prev_in_time == nullptr)
+                {
+                    current->flags = YST_COMP_INVALID;
+                    continue;
+                }
+            }
+
+            if ((header->flags & YST_COMP_INVALID) && header->prev_in_time == nullptr) continue; 
 
             if (header->forward_in_time)
             {
@@ -536,6 +564,8 @@ YST_API void yst_relive(struct yst_context *ctx, yst_frame_t time)
                 header = header->prev_in_time;
             }
 
+            assert(header != nullptr);
+
             struct yst_comp_node_header* look_ahead = header->prev_in_time;
             while (look_ahead != nullptr && header->timestamp > time)
             {
@@ -546,11 +576,35 @@ YST_API void yst_relive(struct yst_context *ctx, yst_frame_t time)
                 look_ahead = header->prev_in_time;
             }
 
-            assert(header->timestamp <= time);
-
-            if (current != header && header->forward_in_time)
+            if ((header->flags & YST_COMP_ADD) != 0 && header->timestamp > time)
             {
-                memcpy(current, header, array->elem_size);
+                *current = (struct yst_comp_node_header){
+                    .prev_in_time = nullptr,
+                    .forward_in_time = yst_new_forward_record(ctx, header),
+                    .timestamp = 0,
+                    .flags = YST_COMP_INVALID,
+                };
+            }
+            else
+            {
+                assert(header->timestamp <= time);
+
+                if (current != header && header->forward_in_time)
+                {
+                    memcpy(current, header, array->elem_size);
+                }
+            }
+
+            if (header->timestamp > closest_time) closest_time = header->timestamp;
+        }
+
+        // roll back recycled pool
+        for (struct yst_frame_archive_header *archive = ctx->frame_data[closest_time].archive; archive != nullptr; archive = archive->prev)
+        {
+            if (archive->comp_type == comp_type)
+            {
+                comp_type->recycled = archive->recycled;
+                break;
             }
         }
     }
@@ -575,8 +629,16 @@ YST_API void yst_elapse(struct yst_context *ctx, float delta_time)
                     struct yst_comp_node_header *current = header;
                     // find the actual node in the archive
                     header = header->forward_in_time->next_in_time->prev_in_time;
-                    current->forward_in_time = nullptr;
                     current->prev_in_time = header;
+
+                    if (header == nullptr)
+                    {
+                        assert((current->forward_in_time->next_in_time->flags & YST_COMP_ADD) != 0);
+                        yst_delete_forward_record(ctx, current->forward_in_time);
+                        // start with the next record
+                        header = current->forward_in_time->next_in_time;
+                    }
+                    current->forward_in_time = nullptr;
 
                     assert(current != header);
                     assert(current->timestamp < ctx->now);
@@ -621,7 +683,7 @@ YST_API void yst_elapse(struct yst_context *ctx, float delta_time)
         if (archive_count > 0)
         {
             size_t elem_size = comp_type->array.elem_size;
-            void* archive = yst_alloc_archive(ctx, &ctx->frame_data[ctx->now].archive, archive_count * elem_size);
+            void* archive = yst_alloc_archive(ctx, &ctx->frame_data[ctx->now].archive, comp_type, archive_count * elem_size);
             uint32_t cur_archive_index = 0;
             for (uint32_t i = 0; i < array->elem_count; ++i)
             {
@@ -632,6 +694,7 @@ YST_API void yst_elapse(struct yst_context *ctx, float delta_time)
                     void* dst = (((char*)archive) + cur_archive_index * elem_size);
                     memcpy(dst, header, elem_size);
                     header->prev_in_time = (struct yst_comp_node_header*)dst;
+                    header->flags &= ~YST_COMP_ADD;
 
                     assert(header != dst);
 
@@ -741,14 +804,14 @@ YST_LIB struct yst_comp_type_node* yst_alloc_comp_type(struct yst_context *ctx, 
 
 YST_LIB void yst_mark_comp_deleted(struct yst_context *ctx, struct yst_comp_type_node *comp_type_node, struct yst_comp_node_header *comp)
 {
-    comp->flags |= YST_COMP_INVALID | YST_COMP_DIRTY;
+    comp->flags |= (YST_COMP_INVALID | YST_COMP_DIRTY);
     comp->next_recycled = comp_type_node->recycled;
     comp_type_node->recycled = comp;
 }
 
 #ifdef YST_REMEMBRANCE
 
-YST_LIB void* yst_alloc_archive(struct yst_context *ctx, struct yst_frame_archive_header **p_archive, size_t size)
+YST_LIB void* yst_alloc_archive(struct yst_context *ctx, struct yst_frame_archive_header **p_archive, yst_comp_type comp_type, size_t size)
 {
     size_t total_size = size + sizeof(struct yst_frame_archive_header);
     if (!ctx->frame_archive_region || ((char*)ctx->frame_archive_region->next_alloc_ptr - (char*)ctx->frame_archive_region) + total_size > YST_ARCHIVE_CHUNK_SIZE)
@@ -761,6 +824,8 @@ YST_LIB void* yst_alloc_archive(struct yst_context *ctx, struct yst_frame_archiv
 
     new_archive->prev = *p_archive;
     new_archive->region = ctx->frame_archive_region;
+    new_archive->comp_type = comp_type;
+    new_archive->recycled = comp_type->recycled;
 
     *p_archive = new_archive;
     ctx->frame_archive_region->next_alloc_ptr = (char*)ctx->frame_archive_region->next_alloc_ptr + total_size;
