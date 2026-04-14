@@ -329,6 +329,8 @@ YST_API void yst_clear(struct yst_context *ctx)
         archive_region = prev;
     }
     ctx->frame_archive_region = nullptr;
+
+    memset(ctx->frame_data, 0, sizeof(struct yst_frame_data) * ctx->frame_capacity);
 #endif
 
     ctx->next_entity = 0;
