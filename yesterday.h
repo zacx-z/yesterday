@@ -1,5 +1,5 @@
 /*
- * yesterday - v0.1.2 - a minimalistic ECS implementation that allows you to trace back in time to a moment you wish to relive.
+ * yesterday - v0.1.3 - a minimalistic ECS implementation that allows you to trace back in time to a moment you wish to relive.
  * by Zack Zhang (github.com/zacx-z) 2026
  */
 #ifndef YST_YESTERDAY_H
@@ -245,6 +245,7 @@ YST_LIB void yst_build_serializable_header_in_place(struct yst_context *ctx, str
 YST_LIB void yst_serialize_comp(struct yst_context *ctx, FILE *stream, struct yst_comp_type_node *comp_type, struct yst_serializable_comp_header *header);
 YST_LIB void yst_deserialize_comp(struct yst_context *ctx, FILE *stream, struct yst_comp_type_node *comp_type, struct yst_serializable_comp_header *header);
 YST_LIB void yst_reconstruct_comp_headers_from(struct yst_context *ctx, struct yst_comp_type_node *comp_type, struct yst_serializable_comp_header *header);
+YST_LIB void yst_rebuild_recycled_links(struct yst_context *ctx, struct yst_frame_archive_header *archive);
 #endif
 
 YST_LIB inline struct yst_comp_node_header* yst_get_comp_at(struct yst_comp_array* array, uint32_t index)
@@ -874,6 +875,8 @@ YST_API void yst_load(struct yst_context *ctx, FILE *stream)
 
     for (struct yst_comp_type_node* comp_type = ctx->first; comp_type != nullptr; comp_type = comp_type->next)
     {
+        comp_type->recycled = nullptr;
+
         struct yst_comp_array* array = &comp_type->array;
         fread(&array->elem_count, sizeof(array->elem_count), 1, stream);
 
@@ -917,6 +920,14 @@ YST_API void yst_load(struct yst_context *ctx, FILE *stream)
             struct yst_serializable_comp_header* header = (struct yst_serializable_comp_header*)current->prev_in_time;
             yst_reconstruct_comp_headers_from(ctx, comp_type, header);
             memcpy(current, header, comp_type->array.elem_size);
+        }
+    }
+
+    for (yst_frame_t f = 0; f < ctx->latest; ++f)
+    {
+        for (struct yst_frame_archive_header *archive = ctx->frame_data[f].archive; archive != nullptr; archive = archive->prev)
+        {
+            yst_rebuild_recycled_links(ctx, archive);
         }
     }
     ctx->now = ctx->latest;
@@ -1153,7 +1164,6 @@ YST_LIB void yst_reconstruct_comp_headers_from(struct yst_context *ctx, struct y
             assert(prev != nullptr);
         }
 
-        // FIXME: the next_recycled info is lost; should save it temporarily somehow
         *(struct yst_comp_node_header*)header = (struct yst_comp_node_header){
             .prev_in_time = (struct yst_comp_node_header*)prev,
             .forward_in_time = nullptr,
@@ -1167,6 +1177,35 @@ YST_LIB void yst_reconstruct_comp_headers_from(struct yst_context *ctx, struct y
         header = prev;
     }
     fflush(stdout);
+}
+
+YST_LIB void yst_rebuild_recycled_links(struct yst_context *ctx, struct yst_frame_archive_header *archive)
+{
+    struct yst_comp_type_node *comp_type = archive->comp_type;
+    for (int i = 0; i < archive->elem_count; ++i)
+    {
+        void* p_mem = (char*)archive + sizeof(struct yst_frame_archive_header) + i * comp_type->array.elem_size;
+        struct yst_comp_node_header* node = (struct yst_comp_node_header*)p_mem;
+        if (node->flags & YST_COMP_INVALID)
+        {
+            node->next_recycled = comp_type->recycled;
+            comp_type->recycled = node;
+        }
+        else if (node->flags & YST_COMP_ADD)
+        {
+            if (node->next_recycled)
+            {
+                struct yst_comp_node_header **p = &comp_type->recycled;
+                while (*p != node)
+                {
+                    assert(*p);
+                    p = &(*p)->next_recycled;
+                }
+                *p = node->next_recycled;
+                node->next_recycled = nullptr;
+            }
+        }
+    }
 }
 
 #endif // YST_REMEMBRANCE
